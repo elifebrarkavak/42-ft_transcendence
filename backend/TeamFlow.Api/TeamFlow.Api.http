@@ -2,3 +2,15 @@
 
 ### Health check
 GET {{baseUrl}}/api/health
+
+### Tüm task'lar
+GET {{baseUrl}}/api/tasks
+
+### Tek task
+GET {{baseUrl}}/api/tasks/1
+
+### Olmayan task
+GET {{baseUrl}}/api/tasks/999
+
+### Sayı olmayan id
+GET {{baseUrl}}/api/tasks/abc
