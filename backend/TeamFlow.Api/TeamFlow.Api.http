@@ -14,3 +14,20 @@ GET {{baseUrl}}/api/tasks/999
 
 ### Sayı olmayan id
 GET {{baseUrl}}/api/tasks/abc
+
+
+### Yeni task
+POST {{baseUrl}}/api/tasks
+Content-Type: application/json
+
+{
+  "title": "Profil pages"
+}
+
+### Boş başlık (400 beklenir)
+POST {{baseUrl}}/api/tasks
+Content-Type: application/json
+
+{
+  "title": ""
+}

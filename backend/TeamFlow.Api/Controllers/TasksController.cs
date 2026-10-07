@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using TeamFlow.Api.Dtos;
 using TeamFlow.Api.Models;
 
 namespace TeamFlow.Api.Controllers
@@ -11,7 +12,7 @@ namespace TeamFlow.Api.Controllers
         private static readonly List<TaskItem> _tasks = new()
         {
             new TaskItem {Id = 1, Title = "Login Page", CreatedAt = DateTime.UtcNow},
-            new TaskItem {Id = 2, Title = "Database Shame", Status = "IN_PROGRESS", CreatedAt = DateTime.UtcNow},
+            new TaskItem {Id = 2, Title = "Database Schem", Status = "IN_PROGRESS", CreatedAt = DateTime.UtcNow},
         };
 
         [HttpGet]
@@ -26,6 +27,21 @@ namespace TeamFlow.Api.Controllers
             if(task == null)
                 return NotFound();
             return Ok(task);
+        }
+
+        [HttpPost]
+        public IActionResult Create(CreateTaskRequest request)
+        {
+            var newId = _tasks.Count == 0 ? 1 : _tasks.Max(t => t.Id) + 1;
+
+            var task = new TaskItem
+            {
+                Id = newId,
+                Title = request.Title,
+                CreatedAt = DateTime.UtcNow  
+            };
+            _tasks.Add(task);
+            return CreatedAtAction(nameof(GetById), new {id = task.Id}, task);
         }
     }
 
