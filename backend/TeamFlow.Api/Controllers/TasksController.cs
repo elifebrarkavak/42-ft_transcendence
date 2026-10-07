@@ -12,7 +12,7 @@ namespace TeamFlow.Api.Controllers
         private static readonly List<TaskItem> _tasks = new()
         {
             new TaskItem {Id = 1, Title = "Login Page", CreatedAt = DateTime.UtcNow},
-            new TaskItem {Id = 2, Title = "Database Schem", Status = "IN_PROGRESS", CreatedAt = DateTime.UtcNow},
+            new TaskItem {Id = 2, Title = "Database Schema", Status = "IN_PROGRESS", CreatedAt = DateTime.UtcNow},
         };
 
         [HttpGet]
@@ -42,6 +42,27 @@ namespace TeamFlow.Api.Controllers
             };
             _tasks.Add(task);
             return CreatedAtAction(nameof(GetById), new {id = task.Id}, task);
+        }
+
+        [HttpPut("{id:int}")]
+        public IActionResult Update(int id, UpdateTaskRequest request)
+        {
+            var task = _tasks.FirstOrDefault( t => t.Id == id);
+            if(task == null)
+                return NotFound();
+            task.Title = request.Title;
+            task.Status =request.Status;
+            return Ok(task);
+        }
+
+        [HttpDelete("{id:int}")]
+        public IActionResult Delete(int id)
+        {
+            var task = _tasks.FirstOrDefault( t => t.Id == id);
+            if(task == null)
+                return NotFound();
+            _tasks.Remove(task);
+            return NoContent();
         }
     }
 

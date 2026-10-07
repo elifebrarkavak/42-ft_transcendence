@@ -31,3 +31,27 @@ Content-Type: application/json
 {
   "title": ""
 }
+
+### Güncelle
+PUT {{baseUrl}}/api/tasks/1
+Content-Type: application/json
+
+{
+  "title": "Login sayfası (güncellendi)",
+  "status": "IN_PROGRESS"
+}
+
+### Geçersiz status (400 beklenir)
+PUT {{baseUrl}}/api/tasks/1
+Content-Type: application/json
+
+{
+  "title": "Login",
+  "status": "BITTI"
+}
+
+### Sil
+DELETE {{baseUrl}}/api/tasks/2
+
+### Silineni tekrar sil (404 beklenir)
+DELETE {{baseUrl}}/api/tasks/2
