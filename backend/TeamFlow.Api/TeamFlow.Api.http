@@ -1,7 +1,0 @@
-@TeamFlow.Api_HostAddress = http://localhost:5120
-
-GET {{TeamFlow.Api_HostAddress}}/api/health
-
-###
-
-GET {{TeamFlow.Api_HostAddress}}/api/health/ping
