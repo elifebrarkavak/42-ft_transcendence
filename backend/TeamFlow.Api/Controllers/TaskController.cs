@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using TeamFlow.Api.Domain;
 using TeamFlow.Api.Dtos;
+using Microsoft.EntityFrameworkCore;
 
 namespace TeamFlow.Api.Controllers;
 
@@ -8,9 +9,16 @@ namespace TeamFlow.Api.Controllers;
 [Route("api/tasks")]
 public class TaskController : ControllerBase
 {
-    private static readonly List<TaskItem> Tasks = new(); //veri bellekte tutuluyor
+    private readonly AppDbContext _db;
+
+    public TaskController(AppDbContext db)
+    {
+        _db = db;
+    }
+    //private static readonly List<TaskItem> Tasks = new(); //veri bellekte tutuluyor
     [HttpPost]
-    public IActionResult Create([FromBody] CreateTaskRequest request)
+    public async Task<IActionResult> Create(
+        [FromBody] CreateTaskRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Title))
         {
@@ -28,26 +36,47 @@ public class TaskController : ControllerBase
         {
             Title = request.Title.Trim()
         };
-        Tasks.Add(task);
+        _db.Tasks.Add(task);
+        await _db.SaveChangesAsync();
+        //Tasks.Add(task);
 
         // Görev bilgilerini cevap olarak gönderiyoruz.
-        return Ok(new
-        {
-            id = task.Id,
-            title = task.Title,
-            status = task.Status,
-            createdAt = task.CreatedAt
-        });
+        // return Ok(new
+        // {
+        //     id = task.Id,
+        //     title = task.Title,
+        //     status = task.Status,
+        //     createdAt = task.CreatedAt
+        // });
+    return CreatedAtAction(
+    nameof(GetById),
+    new { id = task.Id },
+    new
+    {
+        id = task.Id,
+        title = task.Title,
+        status = task.Status,
+        createdAt = task.CreatedAt
+    });
     }
+
+
     [HttpGet]
-    public IActionResult GetAll()
+    public async Task<IActionResult> GetAll()
     {
-        return Ok(Tasks);
+        var tasks = await _db.Tasks
+            .AsNoTracking()
+            .ToListAsync();
+
+        return Ok(tasks);
     }
+
     [HttpGet("{id:guid}")]
-    public IActionResult GetById([FromRoute] Guid id)
+    public async Task<IActionResult> GetById([FromRoute] Guid id)
     {
-        var task = Tasks.FirstOrDefault(item => item.Id == id);
+        var task = await _db.Tasks
+        .AsNoTracking()
+        .FirstOrDefaultAsync(item => item.Id == id);
 
         if(task is null)
         {
@@ -60,7 +89,7 @@ public class TaskController : ControllerBase
     }
 
     [HttpPatch("{id:guid}")]
-    public IActionResult Update(
+    public async Task<IActionResult> Update(
         [FromRoute] Guid id,
         [FromBody] UpdateTaskRequest request)
     {
@@ -75,7 +104,8 @@ public class TaskController : ControllerBase
                 }
             });
         }
-        var task = Tasks.FirstOrDefault(item => item.Id == id);
+        var task = await _db.Tasks
+            .FirstOrDefaultAsync(item => item.Id == id);
 
         if(task is null)
         {
@@ -85,6 +115,26 @@ public class TaskController : ControllerBase
             });
         }
         task.Title = request.Title.Trim();
+
+        await _db.SaveChangesAsync();
         return Ok(task);
+    }
+
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete([FromRoute] Guid id)
+    {
+        var task = await _db.Tasks
+            .FirstOrDefaultAsync( item => item.Id == id);
+        
+        if(task is null)
+        {
+            return NotFound(new
+            {
+                code = "TASK_NOT_FOUND"
+            });
+        }
+        _db.Tasks.Remove(task);
+        await _db.SaveChangesAsync();
+        return NoContent();
     }
 }
