@@ -976,3 +976,256 @@ Bu üç düzenleme sonraki kullanıcı isteğiyle uygulama koduna da eklendi.
 Sıradaki ders: Kayıt endpoint'indeki küçük düzenlemeler ve validasyon;
 ardından login ve oturum yönetimi. Bölüm 24 önceki kontrol noktasını gösterir;
 en son durum bu bölümdür.
+
+## 32. Register için alan bazlı validasyon
+
+İlk genel hata kontrolünü, alanlara göre hata kodu toplayan bir yapıyla değiştirdik:
+
+```csharp
+var errors = new Dictionary<string, string[]>();
+```
+
+`Dictionary`, anahtar/değer çiftleri tutar. Anahtar alan adı (`name`, `email`,
+`password`), değer ise o alanın hata kodlarını tutan string dizisidir.
+
+Ad kontrolü:
+
+```csharp
+if (string.IsNullOrWhiteSpace(request.Name))
+{
+    errors["name"] = new[] { "REQUIRED" };
+}
+else if (request.Name.Trim().Length > 100)
+{
+    errors["name"] = new[] { "MAX_LENGTH_100" };
+}
+```
+
+`else if` sayesinde boş ad için uzunluk kontrolü yapılmaz. Uzunluğu,
+kaydedeceğimiz temizlenmiş metin üzerinde ölçüyoruz. Bu kontrol API seviyesinde;
+henüz veritabanı sütununa 100 karakter sınırı eklemedik.
+
+E-posta için `using System.ComponentModel.DataAnnotations;` eklendi:
+
+```csharp
+if (string.IsNullOrWhiteSpace(request.Email))
+{
+    errors["email"] = new[] { "REQUIRED" };
+}
+else if (!new EmailAddressAttribute().IsValid(request.Email.Trim()))
+{
+    errors["email"] = new[] { "INVALID_EMAIL" };
+}
+```
+
+`!` sonucu tersine çevirir; geçerli değilse hata eklenir. Bu temel biçim
+kontrolü, adresin gerçekten var olduğunu veya kullanıcıya ait olduğunu doğrulamaz.
+
+Parola için boşluk kontrolü korunur:
+
+```csharp
+if (string.IsNullOrWhiteSpace(request.Password))
+{
+    errors["password"] = new[] { "REQUIRED" };
+}
+```
+
+Parola karmaşıklığını daha sonra çağrılan Identity kontrol eder. Bu hatalar
+henüz alan bazlı formata çevrilmedi; mevcut `REGISTRATION_FAILED` cevabında döner.
+
+**Bütün kontrollerden sonra**, kullanıcı oluşturmadan önce:
+
+```csharp
+if (errors.Count > 0)
+{
+    return BadRequest(new
+    {
+        status = 400,
+        code = "VALIDATION_ERROR",
+        errors
+    });
+}
+```
+
+Ayrı if blokları sayesinde tek istekte birden fazla alan hatası toplanabilir.
+Frontend her alanın hata kodunu ilgili input altında çevrilmiş metinle gösterebilir.
+
+Boş JSON (`{}`) için beklenen 400 cevabı:
+
+```json
+{
+  "status": 400,
+  "code": "VALIDATION_ERROR",
+  "errors": {
+    "name": ["REQUIRED"],
+    "email": ["REQUIRED"],
+    "password": ["REQUIRED"]
+  }
+}
+```
+
+Diğer örnekler: `email` değeri `samet` ise `INVALID_EMAIL`; temizlenmiş ad
+100 karakteri aşıyorsa `MAX_LENGTH_100` döner.
+
+## 33. Kontrol sırası hatası: Uzun ad neden 201 aldı?
+
+Kullanıcı uzun bir ad gönderdiğinde 201 aldı. Kod incelemesinde ad uzunluğu
+kontrolünün `errors.Count > 0` bloğundan sonra kaldığı görüldü:
+
+```text
+İlk kontroller → Hata listesine bak → Uzunluk hatasını ekle → Kullanıcı oluştur
+```
+
+Hata sonradan ekleniyor, fakat liste tekrar kontrol edilmediği için kayıt
+engellenmiyordu. Uzunluk kontrolü ilk ad kontrolüne taşındı, tekrarlanan ad
+kontrolü kaldırıldı. Doğru sıra:
+
+```text
+Bütün validasyonlar → Hata varsa 400 ile çık → Kullanıcı oluştur
+```
+
+Düzeltmeden sonra kullanıcı sonucu doğru olarak bildirdi. Daha önce 201 ile
+oluşturulan uzun isimli kayıt otomatik silinmez; düzeltme sonraki istekleri etkiler.
+
+Bu düzeltme sırasındaki derleme 0 hata, 3 nullable uyarısıyla geçmişti. Derleyici, hata sözlüğünün boş
+olmasından request alanlarının kesinlikle null olmadığını çıkaramıyor. İki
+`Trim()` çağrısı ve parola parametresi için uyarılar oluşmuştu; sonraki adımda
+kod düzenlendi (bölüm 34).
+
+Nullable düzenlemesi ve Identity hata eşlemesi tamamlandı. Login/oturum
+yönetimine geçiyoruz; en güncel durum bölüm 36'da.
+
+## 34. Nullable uyarıları için yerel değişkenler
+
+Alan kontrolleri ve 400 döndüren bloktan sonra, kullanıcı oluşturulmadan önce:
+
+```csharp
+var name = request.Name?.Trim() ?? string.Empty;
+var email = request.Email?.Trim() ?? string.Empty;
+var password = request.Password ?? string.Empty;
+```
+
+- `?.`: Değer null değilse metodu çağırır; null ise sonuç null olur.
+- `??`: Sol taraf null ise sağdaki değeri kullanır.
+- Yerel değişkenler nullable olmayan string değerler taşır.
+- Parolaya Trim uygulanmaz; karakterleri değiştirilmeden kullanılır.
+
+Bu değişkenler boş girişleri kabul etmek için değildir. Önceki validasyon
+boş değerlerde isteği durdurur; bu satırlar o bloktan sonra kalmalıdır.
+
+Kullanıcı oluştururken `Name = name`, `UserName = email`, `Email = email`
+kullanıldı. Kayıt çağrısı da şu şekilde güncellendi:
+
+```csharp
+var result = await _userManager.CreateAsync(user, password);
+```
+
+Kodda düzenlemeler görüldü; kullanıcı build'in başarılı olduğunu bildirdi.
+Bu not güncellemesinde yeniden derleme çalıştırılmadı.
+
+## 35. Identity hatalarını alan bazlı eşleme
+
+`result.Succeeded` false olduğunda Identity hataları da aynı sözleşmeye çevriliyor:
+
+```csharp
+var identityErrors = new Dictionary<string, List<string>>();
+```
+
+`foreach`, `result.Errors` içindeki her hatayı işler. Switch ifadesi Identity
+kodunu frontend'in kullanacağı alan ve hata koduna dönüştürür:
+
+| Identity kodu | Alan | API hata kodu |
+|---------------|------|---------------|
+| `DuplicateEmail`, `DuplicateUserName` | email | `EMAIL_ALREADY_USED` |
+| `InvalidEmail` | email | `INVALID_EMAIL` |
+| `PasswordTooShort` | password | `PASSWORD_TOO_SHORT` |
+| `PasswordRequiresDigit` | password | `PASSWORD_REQUIRES_DIGIT` |
+| `PasswordRequiresLower` | password | `PASSWORD_REQUIRES_LOWERCASE` |
+| `PasswordRequiresUpper` | password | `PASSWORD_REQUIRES_UPPERCASE` |
+| `PasswordRequiresNonAlphanumeric` | password | `PASSWORD_REQUIRES_SPECIAL_CHARACTER` |
+| Diğerleri | general | `REGISTRATION_FAILED` |
+
+Örnek switch dalı:
+
+```csharp
+var (field, code) = error.Code switch
+{
+    "DuplicateEmail" or "DuplicateUserName"
+        => ("email", "EMAIL_ALREADY_USED"),
+    _ => ("general", "REGISTRATION_FAILED")
+};
+```
+
+Bu kısa örnek yalnızca sözdizimini gösterir; controller'da tablodaki diğer
+eşlemeler de bulunur. `(field, code)` iki değeri ayrı değişkenlere açar.
+`_`, eşleşmeyen kodların varsayılan dalıdır.
+
+Alan için liste henüz yoksa oluşturulur. `Contains` kontrolüyle aynı hata
+kodunun iki kez eklenmesi engellenir. E-posta kullanıcı adı olarak da
+kullanıldığı için iki duplicate hatası tek `EMAIL_ALREADY_USED` koduna dönüşebilir.
+
+Hatalar 400 ile döner:
+
+```csharp
+return BadRequest(new
+{
+    status = 400,
+    code = "VALIDATION_ERROR",
+    errors = identityErrors
+});
+```
+
+JSON'da hem string dizileri hem List<string> aynı dizi biçiminde görünür.
+Frontend artık ön validasyon ve Identity hatalarını aynı alan bazlı yapıyla okur.
+
+Önerilen denemeler: Yeni e-posta ile zayıf parola; kayıtlı e-posta ile geçerli
+parola. Kullanıcı bu adımdan sonra “okey” diyerek devam etti.
+
+## 36. Login'e başlangıç — DTO ve planlanan akış
+
+Register yeni hesap oluşturur. Login mevcut hesabın bilgilerini doğrular ve
+başarılıysa oturum oluşturur. Yalnızca parolanın doğru olması oturum açmaz.
+
+Planlanan istek:
+
+```http
+POST /api/auth/login
+Content-Type: application/json
+```
+
+```json
+{
+  "email": "samet@example.com",
+  "password": "Deneme123"
+}
+```
+
+Anlatılan sonraki dosya: `Dtos/LoginRequest.cs`.
+
+```csharp
+namespace TeamFlow.Api.Dtos;
+
+public class LoginRequest
+{
+    public string? Email { get; set; }
+    public string? Password { get; set; }
+}
+```
+
+**Durum:** Bu not güncellemesindeki dosya kontrolünde LoginRequest henüz yoktu;
+yukarıdaki kod sıradaki uygulama adımıdır. Login endpoint'i de henüz yok.
+
+Planlanan akış:
+
+```text
+İsteği doğrula → E-postayla kullanıcıyı bul → Identity ile parolayı doğrula
+→ JWT üret → HttpOnly cookie olarak gönder
+```
+
+Proje planındaki JWT + HttpOnly cookie yaklaşımı izlenecek. JWT cevap JSON'una
+veya localStorage'a yazılmayacak. Sonraki isteklerde cookie'deki JWT'yi okuyup
+doğrulayacak authentication ayarı da gerekli; yalnızca cookie yazmak yeterli değil.
+CSRF koruması, logout, me ve rate limit henüz uygulanmadı.
+
+Sıradaki küçük adım: LoginRequest'i oluşturmak, ardından kullanıcı bulma ve
+parola doğrulama bölümünü öğrenmek.
