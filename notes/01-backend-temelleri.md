@@ -289,16 +289,18 @@ Tamamladıklarımız:
 - Docker'daki `teamflow` veritabanına psql ile bağlanma.
 - Bağlantı bilgisini User Secrets'a kaydetme.
 - AppDbContext oluşturma ve PostgreSQL sağlayıcısını kaydetme (derlendi).
+- InitialTasks migration'ını oluşturma ve veritabanına uygulama.
+- Oluşturma, listeleme, tek görev getirme, güncelleme ve silmeyi PostgreSQL'e taşıma.
+- 201 Created, Location başlığı ve 204 No Content kullanma.
 
 Henüz yapmadıklarımız:
 
-- Silme metodunu mevcut controller'a ekleme (örneği anlatıldı; dosyada henüz yok).
-- Migration oluşturma/uygulama ve API üzerinden veritabanı bağlantısını sınama.
-- Controller'daki bellek listesini veritabanıyla değiştirme.
 - Kayıt, giriş ve yetkilendirme.
+- Ortak hata yönetimi ve frontend bağlantısı.
+- Organizasyon/proje ilişkileri ve concurrency kontrolü.
 
-Sonraki adım: Migration ile görev tablosunu oluşturmak. Silme örneği anlatıldı
-ancak son dosya kontrolünde DELETE metodu henüz controller'da bulunmuyordu.
+Identity kullanıcı modeli de eklendi (bölüm 25). Sonraki adım, Identity
+migration'ının uygulanmasını doğrulamak ve servisleri kaydetmek.
 
 ## 11. API sözleşmesi
 
@@ -402,10 +404,10 @@ Query ve route farkı:
 JSON istek gövdesi          → [FromBody]
 ```
 
-## 15. Görev silme — anlatılan sonraki adım
+## 15. Görev silme — ilk bellek örneği
 
-**Durum:** Not güncellenirken `TaskController.cs` içinde bu metot henüz yoktu.
-Aşağıdaki örnek derste anlatıldı; uygulanıp denenmesi gerekiyor.
+Bu bölüm bellekte çalışan ilk silme örneğini gösterir. Güncel controller'da
+silme işlemi PostgreSQL kullanıyor; bölüm 23'e bak.
 
 Controller sınıfının içine, diğer metotların dışına eklenecek:
 
@@ -446,7 +448,7 @@ Deneme sırası:
 | GET | `/api/tasks` | Görevleri listeleme | Evet |
 | GET | `/api/tasks/{id}` | Tek görev getirme | Evet |
 | PATCH | `/api/tasks/{id}` | Görev başlığını güncelleme | Evet |
-| DELETE | `/api/tasks/{id}` | Görev silme | Henüz değil; örneği anlatıldı |
+| DELETE | `/api/tasks/{id}` | Görev silme | Evet |
 
 ## 17. PATCH ile güncelleme
 
@@ -564,11 +566,413 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 - `UseNpgsql`: PostgreSQL sağlayıcısını ve bağlantı bilgisini yapılandırır.
 
 Dependency injection, sınıfın ihtiyaç duyduğu nesnenin uygulama tarafından
-sağlanmasıdır. Sonraki adımlarda controller'a `AppDbContext` vereceğiz.
+sağlanmasıdır. Artık controller'a constructor üzerinden `AppDbContext` veriliyor.
 
 Kullanıcı `dotnet build` işleminin başarılı olduğunu bildirdi. Bu, kodun
 derlendiğini gösterir; bağlantı ayarının doğru olduğunu veya tablo oluştuğunu
-kanıtlamaz. Henüz migration uygulanmadı; controller hâlâ `static List<TaskItem>`
-kullanıyor ve görevler uygulama yeniden başlayınca siliniyor.
+kanıtlamaz. O aşamada henüz migration uygulanmamıştı. Sonraki adımlarda migration
+uygulandı ve controller veritabanına taşındı.
 
-Sıradaki işlem: EF CLI ile migration oluşturup `teamflow` veritabanına uygulamak.
+## 21. Migration uygulama ve doğrulama
+
+API klasöründe:
+
+```bash
+dotnet ef --version
+dotnet ef migrations add InitialTasks --output-dir Data/Migrations
+dotnet ef database update
+```
+
+- `migrations add`: Modelden şema değişikliklerini içeren dosyalar üretir; tabloyu henüz oluşturmaz.
+- `Up`: Migration uygulanırken yapılacak işlemler; burada `Tasks` tablosunu oluşturur.
+- `Down`: Migration geri alınırken yapılacak ters işlemler; burada tabloyu siler.
+- `database update`: Bekleyen migration'ları bağlantıdaki veritabanına uygular.
+- Model snapshot: EF Core'un sonraki migration'da değişiklikleri karşılaştırmak için kullandığı model kaydıdır.
+
+İlk denemede `28P01` hatası alındı: bağlantıda gerçek kullanıcı yerine
+`KULLANICI` yer tutucusu kalmıştı. User Secrets doğru bilgilerle güncellendi;
+aynı migration tekrar oluşturulmadan uygulandı. Parola bu nota yazılmaz.
+
+Doğrulama sırasında `teamflow` veritabanında `Tasks` ve `__EFMigrationsHistory`
+tabloları, geçmişte de `20261109202519_InitialTasks` kaydı görüldü.
+Compose'u engelleyen `.env` sonundaki tek başına `\` satırı kaldırıldı.
+
+psql içinde inceleme:
+
+```sql
+SELECT * FROM "Tasks";
+```
+
+```text
+\dt
+\d "Tasks"
+```
+
+## 22. Controller'da DbContext ve kalıcı oluşturma
+
+```csharp
+private readonly AppDbContext _db;
+
+public TaskController(AppDbContext db)
+{
+    _db = db;
+}
+```
+
+Constructor, controller oluşturulurken çalışır. ASP.NET Core kayıtlı context'i
+sağlar. `_db` alanı, metotların bu context'e erişmesini sağlar.
+
+Veritabanı işlemlerini bekleyen metotlar `async Task<IActionResult>` döndürür.
+`await`, asenkron işlemin sonucunu beklerken iş parçacığını bloke etmez.
+
+Görev oluştururken:
+
+```csharp
+_db.Tasks.Add(task);
+await _db.SaveChangesAsync();
+
+return CreatedAtAction(
+    nameof(GetById),
+    new { id = task.Id },
+    new
+    {
+        id = task.Id,
+        title = task.Title,
+        status = task.Status,
+        createdAt = task.CreatedAt
+    });
+```
+
+`Add`, entity'yi eklenmek üzere işaretler; `SaveChangesAsync` veritabanına yazar.
+`CreatedAtAction`, 201 ve yeni kaydın adresini içeren `Location` başlığı üretir.
+`nameof(GetById)`, metodun adını string olarak verir.
+
+## 23. Veritabanından okuma, güncelleme ve silme
+
+EF Core asenkron sorgu metotları için:
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+```
+
+Listeleme:
+
+```csharp
+var tasks = await _db.Tasks.AsNoTracking().ToListAsync();
+return Ok(tasks);
+```
+
+`ToListAsync` sorguyu çalıştırır. `AsNoTracking`, salt okuma sorgusunda değişiklik
+takibini kapatır. Burada eski büyük harfli `Tasks` yerine sorgunun sonucu olan
+küçük harfli `tasks` döndürülmeli; geliştirme sırasında bu hata düzeltildi.
+
+Tek görev okuma:
+
+```csharp
+var task = await _db.Tasks
+    .AsNoTracking()
+    .FirstOrDefaultAsync(item => item.Id == id);
+```
+
+Sonuç null ise 404, bulunursa 200 döndürülür.
+
+Güncellemede sorguyu `AsNoTracking` olmadan çalıştırıyoruz:
+
+```csharp
+var task = await _db.Tasks.FirstOrDefaultAsync(item => item.Id == id);
+// Null kontrolünden sonra:
+task.Title = request.Title.Trim();
+await _db.SaveChangesAsync();
+```
+
+Context nesneyi takip ettiği için ayrıca `_db.Tasks.Update(task)` gerekmez.
+Başlık değişir; ID ve oluşturulma zamanı aynı kalır.
+
+Silmede görev bulunup null kontrolü yapıldıktan sonra:
+
+```csharp
+_db.Tasks.Remove(task);
+await _db.SaveChangesAsync();
+return NoContent();
+```
+
+`Remove`, silme işlemini işaretler; kayıt çağrısı işlemi uygular. Başarı cevabı
+204'tür ve gövde içermez. Bulunamayan görev için 404 döner.
+
+Silme metodunda `[HttpDelete("{id:guid}")]` eksik olduğu için 405 görüldü.
+Attribute eklendi, derleme hatasız geçti ve kullanıcı doğru cevabı doğruladı.
+Kod değişikliğinden sonra çalışan API'nin yeniden başlatılması gerekir.
+
+Eski `static List<TaskItem>` artık kullanılmıyor; dosyada yalnızca yorum olarak
+kalıyor. Oluşturma, okuma ve güncelleme için kullanıcı başarılı denemeleri ve
+yeniden başlatmadan sonra verinin korunduğunu bildirdi.
+
+## 24. Roadmap'te durumumuz — 10 Kasım 2026
+
+| Aşama | Durum |
+|-------|-------|
+| 1. API sözleşmesi | Login taslağı var; diğer sözleşmeler eksik. |
+| 2. Veritabanı ve API temeli | PostgreSQL, görev migration'ı, Identity kullanıcı modeli ve IdentityDbContext hazır. AddIdentity migration'ı üretildi ve incelendi; uygulanması henüz doğrulanmadı. Ortak hata yönetimi ve frontend bağlantısı eksik. |
+| 3. Kayıt ve oturum | Henüz başlanmadı. |
+| 4–5. Organizasyon, üyelik ve projeler | Henüz başlanmadı. |
+| 6. Görevler | Temel CRUD PostgreSQL'de çalışıyor; proje ilişkileri, yetkiler ve concurrency eksik. |
+| 7–10. Arama, profil/arkadaşlık, admin/GDPR ve teslim | Henüz başlanmadı. |
+
+İkinci aşamanın veritabanı kısmı tamamlandı; aşamanın tamamı henüz bitmedi.
+Görev CRUD'u öğrenme amacıyla erkenden yapıldı. Mevcut endpoint'lerde oturum ve
+yetki kontrolü yok. Sırada Identity migration'ının uygulanmasını doğrulamak,
+Identity servislerini kaydetmek, ardından kayıt ve giriş var.
+
+## 25. Identity kullanıcı modeli
+
+Identity, kullanıcı ve rol yönetimi için ASP.NET Core altyapısıdır. Parola
+hashleme ve doğrulama işlemlerini kendi algoritmamızı yazmadan kullanacağız.
+Identity eklemek tek başına endpoint'leri korumaz veya login oluşturmaz.
+
+API klasöründe paket eklendi:
+
+```bash
+dotnet add package Microsoft.AspNetCore.Identity.EntityFrameworkCore --version "10.0.*"
+```
+
+Projede çözümlenen sürüm `10.0.14`. Paket Identity'nin EF Core üzerinden
+veritabanında saklanabilmesi için gereken entegrasyonu sağlar.
+
+`Domain/ApplicationUser.cs`:
+
+```csharp
+using Microsoft.AspNetCore.Identity;
+
+namespace TeamFlow.Api.Domain;
+
+public class ApplicationUser : IdentityUser<Guid>
+{
+    public string Name { get; set; } = string.Empty;
+    public string? AvatarUrl { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+```
+
+`IdentityUser<Guid>` sınıfından miras alıyoruz. Kullanıcının kimlik tipi GUID.
+`Id`, `UserName`, `Email`, `PasswordHash` ve `EmailConfirmed` gibi alanlar hazır
+gelir; tekrar yazılmaz. `Name`, `AvatarUrl`, `CreatedAt` uygulamaya özel alanlar.
+
+Parolayı düz metin saklayan bir entity alanı eklemiyoruz. Kayıt sırasında
+parolayı Identity'nin kullanıcı yönetim servisine vereceğiz. Kullanıcı entity'sini
+API cevabı olarak doğrudan döndürmek yerine ileride response DTO kullanacağız.
+
+## 26. DbContext'i Identity ile genişletme
+
+`Data/AppDbContext.cs` artık şu yapıda:
+
+```csharp
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+using TeamFlow.Api.Domain;
+
+namespace TeamFlow.Api.Data;
+
+public class AppDbContext
+    : IdentityDbContext<ApplicationUser, IdentityRole<Guid>, Guid>
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<TaskItem> Tasks => Set<TaskItem>();
+}
+```
+
+`IdentityDbContext`, normal DbContext özelliklerini korur; Identity tablolarını
+ve ilişkilerini de modele ekler.
+
+| Tür parametresi | Görevi |
+|----------------|--------|
+| `ApplicationUser` | Kullanıcı modeli |
+| `IdentityRole<Guid>` | GUID kimlikli rol modeli |
+| `Guid` | Identity ilişkilerinde kullanılan kimlik tipi |
+
+`Tasks` korunur; görevler ve kullanıcılar aynı veritabanında saklanabilir.
+Bu değişiklik henüz görevlere kullanıcı ilişkisi eklemez.
+
+Context'e `TeamFlow.Api.Data` namespace'i eklendi. Context'i kullanan dosyalar
+gerektiğinde `using TeamFlow.Api.Data;` ile bu tipe erişir.
+
+Geliştirme sırasında `Tasks` yanlışlıkla `Task` yazıldığı için controller'daki
+`_db.Tasks` erişimleri derlenmedi. Property tekrar `Tasks` yapıldı. Eksik kullanıcı
+namespace'i de eklendi. Son kontrolde derleme 0 hata, 0 uyarıyla geçti.
+
+## 27. AddIdentity migration'ı
+
+Çalıştırılan komut:
+
+```bash
+dotnet ef migrations add AddIdentity --output-dir Data/Migrations
+```
+
+`20261110182254_AddIdentity.cs` oluştu. İncelemede yeni Identity tablolarını
+oluşturduğu ve mevcut `Tasks` tablosunu değiştirmediği görüldü.
+
+| Tablo | Saklanan bilgi |
+|-------|----------------|
+| `AspNetUsers` | Kullanıcılar ve özel profil alanları |
+| `AspNetRoles` | Roller |
+| `AspNetUserRoles` | Kullanıcı-rol eşleşmeleri |
+| `AspNetUserClaims` | Kullanıcı claim kayıtları |
+| `AspNetRoleClaims` | Rol claim kayıtları |
+| `AspNetUserLogins` | Harici giriş sağlayıcısı eşleşmeleri |
+| `AspNetUserTokens` | Identity kullanıcı token kayıtları |
+
+Tablonun oluşturulması ilgili özelliğin tamamen geliştirildiği anlamına gelmez.
+Örneğin harici giriş tablosunun bulunması OAuth akışını otomatik oluşturmaz.
+
+Migration'ın `Down` bölümünde bu Identity tablolarını kaldıran işlemler bulunur;
+normal ileri uygulamada çalışan bölüm `Up`'tır. `Down` çalıştırılmadı.
+
+Uygulama için verilen sonraki komut:
+
+```bash
+dotnet ef database update
+```
+
+**Güncel durum:** AddIdentity dosyaları ve başarılı derleme kontrol edildi.
+Sonrasında Identity servisleri ve register endpoint'i eklendi; kullanıcı kayıt
+denemesinin başarılı olduğunu bildirdi. Bu son aşamada veritabanı ayrıca
+sorgulanmadı. Login endpoint'i henüz yazılmadı.
+
+## 28. Identity servislerini kaydetme
+
+`Program.cs` içinde, DbContext kaydından sonra ve `builder.Build()` öncesinde:
+
+```csharp
+builder.Services
+    .AddIdentityCore<ApplicationUser>(options =>
+    {
+        options.User.RequireUniqueEmail = true;
+        options.Password.RequiredLength = 8;
+        options.Password.RequireDigit = true;
+        options.Password.RequireLowercase = true;
+        options.Password.RequireUppercase = true;
+        options.Password.RequireNonAlphanumeric = false;
+    })
+    .AddRoles<IdentityRole<Guid>>()
+    .AddEntityFrameworkStores<AppDbContext>();
+```
+
+- `AddIdentityCore`: Kullanıcı yönetim servislerini, örneğin UserManager'ı kaydeder.
+- `RequireUniqueEmail`: Identity kullanıcı doğrulamasında e-postanın benzersizliğini kontrol eder; tek başına veritabanında unique constraint oluşturmaz.
+- Parola: En az 8 karakter, rakam, küçük ve büyük harf gerekir. Özel karakter zorunlu değildir.
+- `AddRoles`: Rol yönetim servislerini ekler; henüz kullanıcıya rol atamadık.
+- `AddEntityFrameworkStores`: Kullanıcı/rol saklama işlemlerini AppDbContext'e bağlar.
+
+Bu servis kaydı şema değişikliği değildir; kendisi için migration gerekmez.
+Derlemenin başarılı olduğu kullanıcı tarafından bildirildi. Bu kayıt henüz
+cookie oturumunu veya endpoint korumasını yapılandırmaz.
+
+## 29. RegisterRequest DTO'su
+
+`Dtos/RegisterRequest.cs` dosyasında nullable string alanlar tanımlandı:
+
+```csharp
+public class RegisterRequest
+{
+    public string? Name { get; set; }
+    public string? Email { get; set; }
+    public string? Password { get; set; }
+}
+```
+
+DTO istekteki parolayı geçici olarak taşır. Entity'de ise Identity'nin
+ürettiği `PasswordHash` saklanır. Parola loglanmaz, cevapta döndürülmez ve
+düz metin olarak veritabanına yazılmaz.
+
+Mevcut DTO global namespace'te. Tutarlılık için ileride
+`namespace TeamFlow.Api.Dtos;` eklenirse AuthController'a ilgili using de eklenmeli.
+
+## 30. İlk kayıt endpoint'i
+
+`Controllers/AuthController.cs` içinde `POST /api/auth/register` oluşturuldu.
+Controller, constructor üzerinden `UserManager<ApplicationUser>` alır:
+
+```csharp
+private readonly UserManager<ApplicationUser> _userManager;
+
+public AuthController(UserManager<ApplicationUser> userManager)
+{
+    _userManager = userManager;
+}
+```
+
+İşlem sırası:
+
+1. Ad, e-posta ve parola null/boş/yalnızca boşluk ise 400 `VALIDATION_ERROR` döner.
+2. `ApplicationUser` oluşturulur; ID üretilir, ad ve e-postanın kenar boşlukları temizlenir.
+3. Kullanıcı adı olarak da e-posta kullanılır.
+4. Kullanıcı ve parola UserManager'a verilir.
+5. Başarısızlıkta Identity hata kodları döndürülür.
+6. Başarıda 201 ve yalnızca `id`, `name`, `email` döndürülür.
+
+Temel kayıt kodu:
+
+```csharp
+var user = new ApplicationUser
+{
+    Id = Guid.NewGuid(),
+    Name = request.Name.Trim(),
+    UserName = request.Email.Trim(),
+    Email = request.Email.Trim()
+};
+
+var result = await _userManager.CreateAsync(user, request.Password);
+```
+
+UserManager, kullanıcı/parola kurallarını kontrol eder ve başarılıysa parola
+hash'iyle birlikte kullanıcıyı kaydeder. Ayrıca `_db.Users.Add` veya
+`SaveChangesAsync` çağırmıyoruz. Parolaya Trim uygulanmaz.
+
+`result.Succeeded` başarı durumudur. `result.Errors.Select(...)`, her hatadan
+yalnızca kodunu içeren bir nesne üretir.
+
+Postman örneği (gerçek hesap bilgileri değildir):
+
+```http
+POST /api/auth/register
+Content-Type: application/json
+```
+
+```json
+{
+  "name": "Samet",
+  "email": "samet@example.com",
+  "password": "Deneme123"
+}
+```
+
+Başarı: 201 ve kullanıcı bilgileri. **Kayıt işlemi henüz oturum açmaz.**
+Kullanıcı denemenin başarılı olduğunu bildirdi.
+
+Ek denemeler: Aynı e-postayla tekrar kayıt ve farklı e-postayla zayıf parola
+gönderildiğinde 400 beklenir. Bu denemelerin sonuçları ayrıca paylaşılmadı.
+
+### Mevcut kodda kalan küçük düzenlemeler
+
+- Kayıt hatası kodu `REGISTRATION_FAILED` olarak düzeltildi.
+- AuthController'a `namespace TeamFlow.Api.Controllers;` eklendi.
+- RegisterRequest'e DTO namespace'i ve controller'a ilgili using eklendi.
+- Alan bazlı doğrulama, uzunluk sınırları ve ortak hata formatı henüz tamamlanmadı.
+
+Bu üç düzenleme sonraki kullanıcı isteğiyle uygulama koduna da eklendi.
+
+## 31. Güncel durum — register sonrası
+
+- Kullanıcı modeli ve IdentityDbContext hazır.
+- Identity servisleri kayıtlı.
+- Register endpoint'i yazıldı; kullanıcı başarılı kayıt bildirdi.
+- Login, logout, me, cookie/JWT oturumu, CSRF, rate limit ve endpoint yetkilendirmesi henüz yok.
+- Ortak hata yönetimi ve frontend entegrasyonu eksik.
+
+Sıradaki ders: Kayıt endpoint'indeki küçük düzenlemeler ve validasyon;
+ardından login ve oturum yönetimi. Bölüm 24 önceki kontrol noktasını gösterir;
+en son durum bu bölümdür.
